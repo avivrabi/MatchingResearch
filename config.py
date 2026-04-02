@@ -1,0 +1,14 @@
+"""
+This file contains the hyperparameters and global configurations.
+"""
+
+# Experiment configurations
+NUM_PARTICIPANTS = 10000
+INF = 1e10
+
+# For matching
+FIXED_K = 2
+VARYING_RATIO_MAX_K = 5
+CALIPER = 0.2 # TODO: Think about tuning (when it was 0.3 i could do fixed_k=2 only)
+IS_LOGIT = True
+CLIP_EPS = 1e-6
