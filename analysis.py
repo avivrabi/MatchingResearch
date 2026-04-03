@@ -7,17 +7,17 @@ class Analyzer:
     Analyzes matched cohorts using Stratified Cox Proportional Hazards.
     Each matched set (1 treated + k controls) forms a stratum.
     """
-    def __init__(self, matches: list, k: int = 0, censored_controls: dict = None, method_name: str = ""):
+    def __init__(self, matches: list, k: int = 0, transitioned_controls: dict = None, method_name: str = ""):
         """
         Args:
             matches: list of dicts with {"treated": Participant, "control": [Participant, ...], "match_time": int}
             k: number of controls per treated participant used in matching
-            censored_controls: dict {participant_id: surgery_age} for controls that transitioned to treated (censored at surgery_age)
+            transitioned_controls: dict {participant_id: surgery_age} for controls that transitioned to treated (censored at surgery_age)
             method_name: label for the matching method
         """
         self.matches = matches
         self.k = k
-        self.censored_controls = censored_controls or {}
+        self.transitioned_controls = transitioned_controls or {}
         self.method_name = method_name
         self.df = self.build_dataframe() # dataframe for Stratified Cox
         self.cox_model = None            # cox model that will be fit and used for analysis
@@ -35,7 +35,7 @@ class Analyzer:
             rows.append(self.participant_to_row(treated, set_id, match_time, is_treatment=True))
 
             for control in match["control"]:
-                censor_age = self.censored_controls.get(control.id, None)
+                censor_age = self.transitioned_controls.get(control.id, None)
                 rows.append(self.participant_to_row(control, set_id, match_time, is_treatment=False, censor_age=censor_age))
 
         return pd.DataFrame(rows)
@@ -95,7 +95,7 @@ class Analyzer:
         n_treated = self.df["treatment"].sum()
         n_controls = n_total - n_treated
         n_events = self.df["event_observed"].sum()
-        n_censored_transitions = len(self.censored_controls)
+        n_transitions = len(self.transitioned_controls)
 
         print(f"\n{'='*60}")
         print(f" Stratified Cox PH Results - {self.method_name}")
@@ -106,7 +106,7 @@ class Analyzer:
         print(f"    Treated:              {n_treated}")
         print(f"    Controls:             {n_controls}")
         print(f"    Cancer events:        {n_events}")
-        print(f"    Dynamic transitions:  {n_censored_transitions}")
+        print(f"    Dynamic transitions:  {n_transitions}")
         print(f"{'-'*60}")
         print(f"  Coefficient (beta):     {coef:.4f}")
         print(f"  Hazard Ratio (e^beta):  {hr:.4f}")

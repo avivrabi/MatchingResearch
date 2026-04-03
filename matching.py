@@ -23,6 +23,7 @@ class Matcher:
         self.varying_ratio_max_k = varying_ratio_max_k
         self.caliper = caliper
         self.is_logit = is_logit
+        self.skipped_participants = [] # Participants that could not be matched
 
     def greedy_match_control_to_treated(self, treated_participant):
         """
@@ -62,29 +63,26 @@ class Matcher:
 
     def varying_ratio_matching(self):
         """
-        Performs varying-ratio matching.
-        The matching is greedy: each treated patient is first guaranteed at least one control,
-        then remaining controls are greedily assigned to the closest treated patient that has not yet reached varying_ratio_max_k controls.
-        A control is only assigned if it falls within the caliper distance.
+        Performs varying-ratio matching (two-phase greedy).
+        Phase 1: Each treated patient is guaranteed at least one control (skipped if none within caliper).
+        Phase 2: Remaining controls are greedily assigned up to varying_ratio_max_k per treated.
 
         Returns a list of dicts: {"treated": Participant, "control": [Participant, ...]}.
+        Populates self.skipped_participants with treated participants that could not be matched.
         """
-        # First, make sure there are enough control participants.
-        if len(self.control_participants) < len(self.treatment_participants):
-            raise ValueError("Not enough control participants, you need control participants for each treatment participant.")
-
         matches = []
+        self.skipped_participants = []
+
         # Phase 1: guarantee each treated patient gets at least one control.
-        # TODO: we can think if we want to enforce this or not.
         for treated_participant in self.treatment_participants:
             greedy_match = self.greedy_match_control_to_treated(treated_participant)
-            if greedy_match is None:
-                raise ValueError(f"No control within caliper found for treated participant {treated_participant.id}.")
-            matches.append({"treated": treated_participant, "control": [greedy_match]})
+            if greedy_match is not None:
+                matches.append({"treated": treated_participant, "control": [greedy_match]})
+            else:
+                self.skipped_participants.append(treated_participant)
 
         # Phase 2: greedily assign remaining controls, up to varying_ratio_max_k per treated patient.
         for control_participant in list(self.control_participants):
-            # Available treated participants that have not yet reached varying_ratio_max_k controls.
             available_treated = [m["treated"] for m in matches if len(m["control"]) < self.varying_ratio_max_k]
             best_treated = self.greedy_match_treated_to_control(control_participant, available_treated)
             if best_treated:

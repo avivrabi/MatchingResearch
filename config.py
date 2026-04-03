@@ -5,7 +5,6 @@ This file contains the hyperparameters and global configurations.
 # Experiment configurations
 NUM_PARTICIPANTS = 10000
 INF = 1e10
-FOLLOW_UP_YEARS = 50
 
 # For matching
 FIXED_K = 2

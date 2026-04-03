@@ -1,4 +1,4 @@
-from config import NUM_PARTICIPANTS, FIXED_K, VARYING_RATIO_MAX_K, FOLLOW_UP_YEARS
+from config import NUM_PARTICIPANTS, FIXED_K, VARYING_RATIO_MAX_K
 from synthesize_data import generate_patient_data
 from participant import Participant
 from matching import Matcher
@@ -22,7 +22,7 @@ class Experiment:
         n_with_surgery = len([p for p in self.all_participants if p.surgery_age is not None])
         print(f"Participants with surgery: {n_with_surgery}, without: {len(self.all_participants) - n_with_surgery}")
 
-    def run_dynamic_matching(self, k, method="greedy", follow_up_years=FOLLOW_UP_YEARS):
+    def run_dynamic_matching(self, k, method="greedy"):
         """
         Iterates year by year over the follow-up period.
         At each year, participants reaching their surgery_age become treated and are matched with k controls.
@@ -30,119 +30,119 @@ class Experiment:
 
         Args:
             k: number of controls per treated participant
-            method: "greedy" for varying-ratio, "optimal" for fixed-k (Hungarian algorithm)
-            follow_up_years: number of years to simulate
+            method: "greedy" for varying-ratio, "optimal" for fixed-k
 
         Returns:
             all_matches: list of match dicts with "match_time"
-            censored_controls: dict {participant_id: surgery_age}
+            transitioned_controls: dict {participant_id: surgery_age}
         """
         # Everyone starts in the unmatched pool
         unmatched_pool = set(self.all_participants)
 
         all_matches = []
-        censored_controls = {}
+        transitioned_controls = {}
+        all_skipped = []  # treated participants that could not be matched
 
-        min_age = min(p.discovery_age for p in self.all_participants)
-        max_age = min_age + follow_up_years
+        surgery_ages = sorted(set(p.surgery_age for p in self.all_participants if p.surgery_age is not None))
+        if not surgery_ages:
+            print("No participants with surgery found.")
+            return all_matches, transitioned_controls
 
-        for current_age in range(min_age, max_age + 1):
+        for current_age in surgery_ages:
             # 1. Find unmatched participants getting surgery this year
-            newly_treated_from_pool = [p for p in unmatched_pool
-                                       if p.surgery_age == current_age
-                                       and p.observed_age >= current_age]
+            newly_treated_from_pool = [p for p in unmatched_pool if p.surgery_age == current_age and p.observed_age >= current_age]
 
             # 2. Find matched controls transitioning (getting surgery this year)
             transitioning_controls = []
             for match_idx, match in enumerate(all_matches):
                 for control in match["control"]:
-                    if (control.surgery_age == current_age
-                            and control.id not in censored_controls
-                            and control.observed_age >= current_age):
+                    if control.surgery_age == current_age and control.observed_age >= current_age:
                         transitioning_controls.append(control)
-                        censored_controls[control.id] = current_age
+                        transitioned_controls[control.id] = current_age
 
             # Combine all newly treated participants
             all_newly_treated = newly_treated_from_pool + transitioning_controls
 
-            # Remove newly treated from unmatched pool
+            # Remove newly treated from unmatched pool to make sure every participant is only matched once
             for p in newly_treated_from_pool:
                 unmatched_pool.discard(p)
 
+            # In this case no matching is needed
             if not all_newly_treated:
                 continue
 
-            # Available controls: still in pool, alive at current_age, no surgery yet or surgery in future
+            # Available controls: still in the pool, alive at current_age, no surgery yet or surgery in future
             available = [p for p in unmatched_pool
                          if p.observed_age >= current_age
                          and (p.surgery_age is None or p.surgery_age > current_age)]
 
             if not available:
+                print(f"  Warning: {len(all_newly_treated)} treated participants at age {current_age} could not be matched (no available controls).")
+                all_skipped.extend([(p, current_age, "no available controls") for p in all_newly_treated])
                 continue
 
             # 3. Match newly treated with controls
-            if method == "optimal" and len(all_newly_treated) > 0:
-                # Optimal (Hungarian): batch all newly treated at this time step
+            if method == "optimal":
                 matcher = Matcher(all_newly_treated, list(available), fixed_k=k)
                 try:
                     batch_matches = matcher.fixed_k_matching()
+                # TODO: do we want this fallback or just add them to skipped?
                 except ValueError:
-                    # Not enough controls for optimal — fall back to greedy for this batch
-                    batch_matches = self._greedy_match_batch(all_newly_treated, available, k)
-            else:
-                # Greedy: match one treated at a time
-                batch_matches = self._greedy_match_batch(all_newly_treated, available, k)
+                    print("Not enough controls for optimal — fall back to greedy for this batch")
+                    matcher = Matcher(all_newly_treated, list(available), varying_ratio_max_k=k)
+                    batch_matches = matcher.varying_ratio_matching()
+            else: # method == "greedy"
+                matcher = Matcher(all_newly_treated, list(available), varying_ratio_max_k=k)
+                batch_matches = matcher.varying_ratio_matching()
 
+            all_skipped.extend([(p, current_age, "no match within caliper") for p in matcher.skipped_participants])
+
+            # Removes matched controls from the unmatched_pool so they can't be matched again
             for match in batch_matches:
                 for c in match["control"]:
                     unmatched_pool.discard(c)
-                match["match_time"] = current_age
+                match["match_time"] = current_age # Year of matching to track duration in analysis
                 all_matches.append(match)
 
-        n_transitions = len(censored_controls)
-        print(f"Dynamic matching complete: {len(all_matches)} matched sets, {n_transitions} control-to-treated transitions.")
-        return all_matches, censored_controls
+        # Log skipped participants to file
+        if all_skipped:
+            log_path = f"skipped_participants_{method}.txt"
+            with open(log_path, "w") as f:
+                f.write(f"Skipped participants for method: {method}\n")
+                f.write(f"Total skipped: {len(all_skipped)}\n\n")
+                for participant, age, reason in all_skipped:
+                    f.write(f"Participant {participant.id} at age {age} "
+                            f"(propensity={participant.propensity_score:.4f}) "
+                            f"- reason: {reason}\n")
+            print(f"  {len(all_skipped)} skipped participants logged to {log_path}")
 
-    @staticmethod
-    def _greedy_match_batch(treated_list, available_controls, max_k):
-        """
-        Two-phase varying-ratio greedy matching for a batch of newly treated participants.
-        Phase 1: Guarantee each treated gets at least 1 control.
-        Phase 2: Distribute remaining controls up to max_k per treated.
-        """
-        matcher = Matcher(treated_list, list(available_controls), varying_ratio_max_k=max_k)
+        n_transitions = len(transitioned_controls)
+        n_skipped = len(all_skipped)
+        print(f"Dynamic matching complete: {len(all_matches)} matched sets, {n_transitions} control-to-treated transitions, {n_skipped} skipped.")
+        return all_matches, transitioned_controls
 
-        # Phase 1: guarantee each treated gets at least 1 control
-        batch_matches = []
-        for treated in treated_list:
-            greedy_match = matcher.greedy_match_control_to_treated(treated)
-            if greedy_match is not None:
-                batch_matches.append({"treated": treated, "control": [greedy_match]})
-
-        # Phase 2: distribute remaining controls up to max_k per treated
-        for control in list(matcher.control_participants):
-            available_treated = [m["treated"] for m in batch_matches if len(m["control"]) < max_k]
-            best_treated = matcher.greedy_match_treated_to_control(control, available_treated)
-            if best_treated:
-                for match in batch_matches:
-                    if match["treated"] == best_treated:
-                        match["control"].append(control)
-                        break
-
-        return batch_matches
 
     def run_analysis(self):
-        """Runs dynamic matching + Stratified Cox PH analysis for both methods."""
+        """
+        Runs dynamic matching + Stratified Cox Proportional Hazard analysis for both methods.
+        HERE WE DETERMINE THE EXPERIMENTS MADE.
+        """
         print("\n--- Fixed-K Dynamic Matching (Optimal) ---")
         fixed_k_matches, fixed_k_censored = self.run_dynamic_matching(k=FIXED_K, method="optimal")
 
         print("\n--- Varying-Ratio Dynamic Matching (Greedy) ---")
         varying_ratio_matches, varying_ratio_censored = self.run_dynamic_matching(k=VARYING_RATIO_MAX_K, method="greedy")
 
-        fixed_k_analyzer = Analyzer(fixed_k_matches, k=FIXED_K, censored_controls=fixed_k_censored, method_name="Fixed-K (Dynamic)")
+        fixed_k_analyzer = Analyzer(fixed_k_matches,
+                                    k=FIXED_K,
+                                    transitioned_controls=fixed_k_censored,
+                                    method_name="Fixed-K (Dynamic)")
         fixed_k_analyzer.print_summary()
 
-        varying_ratio_analyzer = Analyzer(varying_ratio_matches, k=VARYING_RATIO_MAX_K, censored_controls=varying_ratio_censored, method_name="Varying-Ratio (Dynamic)")
+        varying_ratio_analyzer = Analyzer(varying_ratio_matches,
+                                          k=VARYING_RATIO_MAX_K,
+                                          transitioned_controls=varying_ratio_censored,
+                                          method_name="Varying-Ratio (Dynamic)")
         varying_ratio_analyzer.print_summary()
 
         return fixed_k_analyzer, varying_ratio_analyzer
