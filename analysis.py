@@ -7,13 +7,17 @@ class Analyzer:
     Analyzes matched cohorts using Stratified Cox Proportional Hazards.
     Each matched set (1 treated + k controls) forms a stratum.
     """
-    def __init__(self, matches: list, method_name: str = ""):
+    def __init__(self, matches: list, k: int = 0, censored_controls: dict = None, method_name: str = ""):
         """
         Args:
-            matches: list of dicts with {"treated": Participant, "control": [Participant, ...]}
-            method_name: label for the matching method (e.g. "Fixed-K", "Varying-Ratio")
+            matches: list of dicts with {"treated": Participant, "control": [Participant, ...], "match_time": int}
+            k: number of controls per treated participant used in matching
+            censored_controls: dict {participant_id: surgery_age} for controls that transitioned to treated (censored at surgery_age)
+            method_name: label for the matching method
         """
         self.matches = matches
+        self.k = k
+        self.censored_controls = censored_controls or {}
         self.method_name = method_name
         self.df = self.build_dataframe() # dataframe for Stratified Cox
         self.cox_model = None            # cox model that will be fit and used for analysis
@@ -22,27 +26,36 @@ class Analyzer:
         """
         Converts matched sets into a DataFrame suitable for Stratified Cox PH.
         Schema: matched_set_id (int), duration (int), event_observed (0/1), treatment (0/1).
+        Handles dynamic censoring: controls that transitioned to treated are censored at surgery_age.
         """
         rows = []
         for set_id, match in enumerate(self.matches):
+            match_time = match.get("match_time", 0)
             treated = match["treated"]
-            rows.append(self.participant_to_row(treated, set_id, is_treatment=True))
+            rows.append(self.participant_to_row(treated, set_id, match_time, is_treatment=True))
 
             for control in match["control"]:
-                rows.append(self.participant_to_row(control, set_id, is_treatment=False))
+                censor_age = self.censored_controls.get(control.id, None)
+                rows.append(self.participant_to_row(control, set_id, match_time, is_treatment=False, censor_age=censor_age))
 
         return pd.DataFrame(rows)
 
     @staticmethod
-    def participant_to_row(p, set_id: int, is_treatment: bool) -> dict:
+    def participant_to_row(p, set_id: int, match_time: int, is_treatment: bool, censor_age: int = None) -> dict:
         """
         Converts a Participant into a row for the survival DataFrame.
-        - duration: time from discovery to the observed event/censoring.
-        - event_observed: 1 if cancer occurred (before death and censoring), 0 otherwise.
+        - duration: time from match_time to the observed event/censoring.
+        - event_observed: 1 if cancer occurred, 0 if censored.
+        - If censor_age is set (control transitioned to treated), they are censored at that age.
         """
-        duration = p.observed_age - p.discovery_age # Recall: observed_age = min(cancer_age, death_age, censoring_age)
-        # cancer_age == 120 is a sentinel meaning "no cancer in a lifetime"
-        event_observed = 1 if (p.cancer_age == p.observed_age and p.cancer_age < 120) else 0
+        if censor_age is not None and censor_age < p.observed_age:
+            # Control transitioned to treated: censored at surgery_age
+            duration = censor_age - match_time
+            event_observed = 0  # Old cohort can't know even if they got cancer
+        else:
+            duration = p.observed_age - match_time
+            # cancer_age == 120 is a sentinel meaning "no cancer in a lifetime"
+            event_observed = 1 if (p.cancer_age == p.observed_age and p.cancer_age < 120) else 0
 
         return {
             "matched_set_id": set_id,
@@ -82,15 +95,18 @@ class Analyzer:
         n_treated = self.df["treatment"].sum()
         n_controls = n_total - n_treated
         n_events = self.df["event_observed"].sum()
+        n_censored_transitions = len(self.censored_controls)
 
         print(f"\n{'='*60}")
         print(f" Stratified Cox PH Results - {self.method_name}")
         print(f"{'='*60}")
+        print(f"  k (controls per treated): {self.k}")
         print(f"  Matched sets (strata):  {n_strata}")
         print(f"  Total participants:     {n_total}")
         print(f"    Treated:              {n_treated}")
         print(f"    Controls:             {n_controls}")
         print(f"    Cancer events:        {n_events}")
+        print(f"    Dynamic transitions:  {n_censored_transitions}")
         print(f"{'-'*60}")
         print(f"  Coefficient (beta):     {coef:.4f}")
         print(f"  Hazard Ratio (e^beta):  {hr:.4f}")

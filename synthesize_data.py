@@ -166,7 +166,7 @@ def run_eda(patients_list):
     sns.pointplot(x=pd.cut(df['other_covariates'], bins=5), y='got_cancer', data=df, ax=axes[1, 1], hue=pd.cut(df['other_covariates'], bins=5), legend=False)
     axes[1, 1].set_title('Cancer Probability vs. Other Factors (X)')
 
-    # 5. Propensity Score Distribution (Treated vs Control)
+    # 5. Propensity Score Distribution (Treated vs. Control)
     treated = df[df['surgery_age'].notnull()]
     control = df[df['surgery_age'].isnull()]
     mean_score = df['propensity_score'].mean()
