@@ -3,6 +3,7 @@ from synthesize_data import generate_patient_data
 from participant import Participant
 from matching import Matcher
 from analysis import Analyzer
+from visualizations import plot_all
 
 
 class Experiment:
@@ -104,16 +105,22 @@ class Experiment:
                 match["match_time"] = current_age # Year of matching to track duration in analysis
                 all_matches.append(match)
 
-        # Log skipped participants to file
+        # Log skipped participants to CSV
         if all_skipped:
-            log_path = f"skipped_participants_{method}.txt"
-            with open(log_path, "w") as f:
-                f.write(f"Skipped participants for method: {method}\n")
-                f.write(f"Total skipped: {len(all_skipped)}\n\n")
-                for participant, age, reason in all_skipped:
-                    f.write(f"Participant {participant.id} at age {age} "
-                            f"(propensity={participant.propensity_score:.4f}) "
-                            f"- reason: {reason}\n")
+            import os
+            import pandas as pd
+            os.makedirs("logs", exist_ok=True)
+            log_path = os.path.join("logs", f"skipped_participants_{method}.csv")
+            skipped_df = pd.DataFrame([
+                {
+                    "participant_id": p.id,
+                    "age": age,
+                    "propensity_score": round(p.propensity_score, 4),
+                    "reason": reason
+                }
+                for p, age, reason in all_skipped
+            ])
+            skipped_df.to_csv(log_path, index=False)
             print(f"  {len(all_skipped)} skipped participants logged to {log_path}")
 
         n_transitions = len(transitioned_controls)
@@ -124,28 +131,32 @@ class Experiment:
 
     def run_analysis(self):
         """
-        Runs dynamic matching + Stratified Cox Proportional Hazard analysis for both methods.
+        Runs dynamic matching + Stratified Cox Proportional Hazard analysis for all configurations.
         HERE WE DETERMINE THE EXPERIMENTS MADE.
         """
-        print("\n--- Fixed-K Dynamic Matching (Optimal) ---")
-        fixed_k_matches, fixed_k_censored = self.run_dynamic_matching(k=FIXED_K, method="optimal")
+        # Define all experiment configurations: (k, method, label)
+        configurations = [
+            (1, "optimal", "Fixed-K=1 (Optimal)"),
+            (FIXED_K, "optimal", f"Fixed-K={FIXED_K} (Optimal)"),
+            (FIXED_K, "greedy", f"Varying-Ratio max={FIXED_K} (Greedy)"),
+            (VARYING_RATIO_MAX_K, "greedy", f"Varying-Ratio max={VARYING_RATIO_MAX_K} (Greedy)"),
+        ]
 
-        print("\n--- Varying-Ratio Dynamic Matching (Greedy) ---")
-        varying_ratio_matches, varying_ratio_censored = self.run_dynamic_matching(k=VARYING_RATIO_MAX_K, method="greedy")
+        analyzers = []
+        for k, method, label in configurations:
+            print(f"\n--- {label} ---")
+            matches, transitioned = self.run_dynamic_matching(k=k, method=method)
 
-        fixed_k_analyzer = Analyzer(fixed_k_matches,
-                                    k=FIXED_K,
-                                    transitioned_controls=fixed_k_censored,
-                                    method_name="Fixed-K (Dynamic)")
-        fixed_k_analyzer.print_summary()
+            analyzer = Analyzer(matches, k=k,
+                                transitioned_controls=transitioned,
+                                method_name=label)
+            analyzer.print_summary()
+            analyzers.append(analyzer)
 
-        varying_ratio_analyzer = Analyzer(varying_ratio_matches,
-                                          k=VARYING_RATIO_MAX_K,
-                                          transitioned_controls=varying_ratio_censored,
-                                          method_name="Varying-Ratio (Dynamic)")
-        varying_ratio_analyzer.print_summary()
+        # Generate all analysis visualizations
+        plot_all(analyzers, self.all_participants)
 
-        return fixed_k_analyzer, varying_ratio_analyzer
+        return analyzers
 
 
 if __name__ == "__main__":

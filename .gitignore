@@ -4,4 +4,5 @@ __pycache__/
 *.pyc
 .env
 .claude/
-skipped_participants_*.txt
+logs/
+visualizations/

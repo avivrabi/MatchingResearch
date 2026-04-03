@@ -2,7 +2,14 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 from scipy.special import logit
 from config import VARYING_RATIO_MAX_K, FIXED_K, CALIPER, IS_LOGIT, INF
-from utils import calculate_propensity_distance
+from config import CLIP_EPS
+
+
+def calculate_propensity_distance(control_propensity: float, treatment_propensity: float, is_logit: bool = True):
+    if is_logit:
+        return abs(logit(np.clip(control_propensity, CLIP_EPS, 1 - CLIP_EPS)) - logit(np.clip(treatment_propensity, CLIP_EPS, 1 - CLIP_EPS)))
+    else:
+        return abs(control_propensity - treatment_propensity)
 
 class Matcher:
     """

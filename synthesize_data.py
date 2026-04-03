@@ -37,19 +37,25 @@ def sample_other_explanations():
 
 
 ### 2nd phase sampling functions ###
-def sample_surgery_at_age(d, p=0.02):
+def sample_surgery_at_age(d, f, x, base=-5.5, beta_f=2.5, beta_x=1.5):
     """
-    TODO: p can be tuned
     S: Age of surgery.
-    Logic: Surgery happens at age D + k with a probability p*(1-p)^k.
-    Constraint: S > D and S < 50. If no surgery by 50, the patient age of surgery is 'None'.
+    Logic: Surgery probability p is modulated by covariates via a logistic function:
+        p = sigmoid(base + beta_f * F + beta_x * X)
+    High family risk and high other risk factors increase surgery likelihood.
+    Surgery happens at age D + k where k ~ Geometric(p).
+    Constraint: S > D and S < 50. If no surgery by 50, returns None.
     """
+    # Covariate-dependent surgery probability
+    p = 1 / (1 + np.exp(-(base + beta_f * f + beta_x * x)))
+    p = np.clip(p, 0.005, 0.15)  # Keep p in a reasonable range
+
     # k follows a geometric distribution (number of failures before success)
     k = np.random.geometric(p) - 1
     s = d + k
     if s < 50:
         return s
-    return None # No surgery performed before age limit
+    return None  # No surgery performed before age limit
 
 def sample_time_of_cancer(age_start, f, x, s_age, beta_f=3, beta_x=1, beta_s_age=-2.5):
     """
@@ -99,7 +105,7 @@ def generate_patient_data(n=1000):
         f = sample_family_risk()
         x = sample_other_explanations()
         c = sample_censor_age()
-        s = sample_surgery_at_age(d)
+        s = sample_surgery_at_age(d, f, x)
 
         # Survival events
         t1 = sample_time_of_cancer(d, f, x, s)
@@ -121,9 +127,9 @@ def generate_patient_data(n=1000):
         })
 
     # Calculate propensity scores for each patient using logistic regression based on its covariates
-    # Propensity score = P(cancer|covariates)
+    # Propensity score = P(treatment|covariates) — probability of receiving prophylactic mastectomy
     X = np.array([[p["discovery_age"], p["family_risk"], p["other_covariates"]] for p in patients])
-    y = np.array([1 if p["cancer_age"] < 120 else 0 for p in patients])
+    y = np.array([1 if p["surgery_age"] is not None else 0 for p in patients])
 
     model = LogisticRegression()
     model.fit(X, y)
