@@ -1,7 +1,0 @@
-.venv/
-.idea/
-__pycache__/
-*.pyc
-.env
-.claude/
-skipped_participants_*.txt
