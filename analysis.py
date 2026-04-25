@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from lifelines import CoxPHFitter
 
@@ -80,43 +81,83 @@ class Analyzer:
         return self.cox_model
 
     def print_summary(self):
-        """Prints a readable summary of the Stratified Cox PH results."""
+        """Prints a readable summary of all HR estimates."""
+        if self.cox_model is None:
+            self.run_stratified_cox()
+
+        # Stratified Cox (already fitted)
+        strat_s = self.cox_model.summary
+        strat_hr = strat_s.loc["treatment", "exp(coef)"]
+        strat_ci = f"[{strat_s.loc['treatment', 'exp(coef) lower 95%']:.4f}, {strat_s.loc['treatment', 'exp(coef) upper 95%']:.4f}]"
+        strat_se = strat_s.loc["treatment", "se(coef)"]
+        strat_p = strat_s.loc["treatment", "p"]
+
+        # Unstratified Cox (pooled, no strata — equivalent to KM-based inference)
+        unstrat_model = CoxPHFitter()
+        unstrat_model.fit(
+            self.df[["duration", "event_observed", "treatment"]],
+            duration_col="duration", event_col="event_observed",
+        )
+        unstrat_s = unstrat_model.summary
+        unstrat_hr = unstrat_s.loc["treatment", "exp(coef)"]
+        unstrat_ci = f"[{unstrat_s.loc['treatment', 'exp(coef) lower 95%']:.4f}, {unstrat_s.loc['treatment', 'exp(coef) upper 95%']:.4f}]"
+        unstrat_se = unstrat_s.loc["treatment", "se(coef)"]
+        unstrat_p = unstrat_s.loc["treatment", "p"]
+
+        # DGP ground truth: beta_s_age=-2.5 in sample_time_of_cancer
+        dgp_beta = -2.5
+        dgp_hr = np.exp(dgp_beta)
+
+        n_strata = self.df["matched_set_id"].nunique()
+        n_treated = int(self.df["treatment"].sum())
+        n_controls = len(self.df) - n_treated
+        n_events = int(self.df["event_observed"].sum())
+        n_transitions = len(self.transitioned_controls)
+
+        w = 78
+        print(f"\n{'=' * w}")
+        print(f"  {self.method_name}")
+        print(f"{'=' * w}")
+        print(f"  Matched sets: {n_strata}   Treated: {n_treated}   Controls: {n_controls}")
+        print(f"  Events: {n_events}   Transitions: {n_transitions}")
+        print(f"{'-' * w}")
+        print(f"  {'Model':<18}{'HR':>10}{'95% CI':>24}{'SE':>10}{'p-value':>14}{'|Diff|':>10}")
+        print(f"  {'-' * (w - 4)}")
+        print(f"  {'DGP (truth)':<18}{dgp_hr:>10.4f}{'':>24}{'':>10}{'':>14}{'':>10}")
+        print(f"  {'Stratified':<18}{strat_hr:>10.4f}{strat_ci:>24}{strat_se:>10.4f}{strat_p:>14.2e}{abs(strat_hr - dgp_hr):>10.4f}")
+        print(f"  {'Unstratified':<18}{unstrat_hr:>10.4f}{unstrat_ci:>24}{unstrat_se:>10.4f}{unstrat_p:>14.2e}{abs(unstrat_hr - dgp_hr):>10.4f}")
+        print(f"{'=' * w}\n")
+
+    def get_variance_metrics(self) -> dict:
+        """
+        Computes variance-related metrics for the results.
+
+        Returns:
+            dict with variance metrics including
+            - coef_se: standard error of the coefficient
+            - hr_se: standard error of the hazard ratio
+            - ci_width: width of 95% CI for the hazard ratio
+        """
         if self.cox_model is None:
             self.run_stratified_cox()
 
         summary = self.cox_model.summary
         coef = summary.loc["treatment", "coef"]
+        coef_se = summary.loc["treatment", "se(coef)"]
         hr = summary.loc["treatment", "exp(coef)"]
         hr_lower = summary.loc["treatment", "exp(coef) lower 95%"]
         hr_upper = summary.loc["treatment", "exp(coef) upper 95%"]
-        p_value = summary.loc["treatment", "p"]
-        n_strata = self.df["matched_set_id"].nunique()
-        n_total = len(self.df)
-        n_treated = self.df["treatment"].sum()
-        n_controls = n_total - n_treated
-        n_events = self.df["event_observed"].sum()
-        n_transitions = len(self.transitioned_controls)
+        ci_width = hr_upper - hr_lower
 
-        print(f"\n{'='*60}")
-        print(f" Stratified Cox PH Results - {self.method_name}")
-        print(f"{'='*60}")
-        print(f"  k (controls per treated): {self.k}")
-        print(f"  Matched sets (strata):  {n_strata}")
-        print(f"  Total participants:     {n_total}")
-        print(f"    Treated:              {n_treated}")
-        print(f"    Controls:             {n_controls}")
-        print(f"    Cancer events:        {n_events}")
-        print(f"    Dynamic transitions:  {n_transitions}")
-        print(f"{'-'*60}")
-        print(f"  Coefficient (beta):     {coef:.4f}")
-        print(f"  Hazard Ratio (e^beta):  {hr:.4f}")
-        print(f"    95% CI:               [{hr_lower:.4f}, {hr_upper:.4f}]")
-        print(f"  p-value:                {p_value:.2e}")
-        print(f"{'-'*60}")
-        if hr < 1:
-            reduction = (1 - hr) * 100
-            print(f"  => Treatment reduces cancer hazard by {reduction:.1f}%")
-        else:
-            increase = (hr - 1) * 100
-            print(f"  => Treatment increases cancer hazard by {increase:.1f}%")
-        print(f"{'='*60}\n")
+        return {
+            "method": self.method_name,
+            "coefficient": coef,
+            "coef_se": coef_se,
+            "hazard_ratio": hr,
+            "hr_lower_95": hr_lower,
+            "hr_upper_95": hr_upper,
+            "ci_width": ci_width,
+            "n_matched_sets": self.df["matched_set_id"].nunique(),
+            "n_treated": int(self.df["treatment"].sum()),
+            "n_controls": int(len(self.df) - self.df["treatment"].sum()),
+        }

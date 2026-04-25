@@ -22,15 +22,15 @@ synthesize_data.py → participant.py → experiment.py → matching.py → anal
 ```
 
 #### 1. Data Generation (`synthesize_data.py`)
-Generates synthetic Israeli patient data for N participants. Each patient has:
+Generates synthetic Israeli patient data for N participants with a fixed seed (`np.random.seed(42)`) for full reproducibility. Each patient has:
 - **Discovery age** (D): Age of high-risk gene discovery, uniform [25, 40]
 - **Family risk** (F): Continuous risk score, uniform [0, 1]
 - **Other covariates** (X): Additional risk factors, uniform [-1, 1] where X=1 means the patient is high-risk.
-- **Surgery age** (S): Prophylactic mastectomy age, geometric distribution from D with covariate-dependent probability p = σ(base + β_f·F + β_x·X). Higher family risk and risk factors increase surgery likelihood. (or None if no surgery before 50)
-- **Cancer age** (T1): Sampled via hazard model with baseline risk, family risk, other factors, and surgery effect
+- **Surgery age** (S): Prophylactic mastectomy age, geometric distribution from D with **covariate-dependent** probability p = σ(base + β_f·F + β_x·X), where base=-5.5, β_f=2.5, β_x=1.5. Higher family risk and risk factors increase surgery likelihood. Clipped to [0.005, 0.15]. (or None if no surgery before 50)
+- **Cancer age** (T1): Sampled via hazard model with baseline risk, family risk, other factors, and **surgery effect** (β_s_age=-2.5, so DGP true HR = exp(-2.5) ≈ 0.082)
 - **Death age** (T2): Israel-calibrated Gompertz-Makeham mortality model
 - **Observed age**: min(cancer, death, censoring) — the study endpoint
-- **Propensity score**: P(treatment | covariates), estimated via logistic regression on all patient covariates
+- **Propensity score**: P(treatment | covariates), estimated via logistic regression on [discovery_age, family_risk, other_covariates]
 
 Also includes `run_eda()` for exploratory data analysis.
 
@@ -80,6 +80,7 @@ The `Analyzer` class fits a **Stratified Cox Proportional Hazards Model** (via `
 - **Each matched set = one stratum** with its own baseline hazard
 - **Why stratified**: Controls within a matched set are dependent (selected by propensity similarity). Standard Cox assumes independence. Stratification accounts for within-set dependence and allows each set to have a different baseline hazard.
 - **Dynamic censoring**: Controls that transitioned to treated are censored at their surgery age in their old matched set (duration = surgery_age - match_time, event_observed = 0)
+- **HR comparison table**: Each experiment prints a comparison of the Stratified Cox HR, Unstratified Cox HR, and the DGP ground truth HR (exp(-2.5) ≈ 0.082), with 95% CI, SE, p-value, and absolute difference from DGP. This demonstrates that the Stratified model best recovers the true treatment effect.
 - **Output**: Hazard Ratio (HR), 95% CI, p-value. HR < 1 means treatment is protective.
 
 
@@ -89,14 +90,14 @@ The `Analyzer` class fits a **Stratified Cox Proportional Hazards Model** (via `
 |---|---|
 | **Cancer Rate** | Grouped bar chart of cancer rate (%) for treated vs control per method |
 | **Propensity Balance** | Before/after matching propensity score distributions (treated vs control) |
-| **Avg Distance Lollipop** | Lollipop plot of average propensity distance before (random pairing) vs after matching per method |
-| **Distance Distribution** | Boxplots of propensity distances between matched pairs, bucketed by score |
-| **Kaplan-Meier** | Descriptive survival curves with risk tables (note: independence assumption not met) |
-| **Cox-Adjusted Survival** | Model-based survival curves respecting stratification — the valid comparison |
+| **Avg Distance Lollipop** | Lollipop plot of average propensity distance before (random pairing) vs after matching, computed per method using each method's actual matched treated participants |
+| **Distance Distribution** | Boxplots of propensity distances between matched pairs, bucketed by propensity score interval |
+| **Combined Survival** | Grid of subplots (one per method), each overlaying 4 curve types differentiated by line style: **KM** (solid) — empirical Kaplan-Meier; **Cox Stratified** (dashed) — model-based with per-stratum baseline hazard; **Cox Unstratified** (dotted) — single pooled baseline; **True Empirical** (dash-dot) — direct fraction computation from actual cancer_age values with no model. Transitioning controls are censored at surgery_age in the True curve to avoid treatment-effect contamination. |
 | **Transitions Over Time** | Bar chart of control-to-treated transitions per age |
 | **Controls Per Treated** | Histogram of how many controls each treated participant received |
+| **Variance Comparison** | Three-panel plot: coefficient SE bar chart, CI width bar chart, and forest plot of hazard ratios with 95% CIs across all methods |
 
-**Why both KM and Cox-Adjusted curves**: The Kaplan-Meier curves are descriptive but violate the independence assumption (matched controls are dependent). The Cox-adjusted curves derive from the stratified model and are statistically valid. Comparing the two demonstrates why stratification matters — they can look quite different.
+**KM vs Cox — complementary tools**: Kaplan-Meier estimates *survival curves* (descriptive) while Cox estimates *hazard ratios* (inferential). In matched cohorts, KM curves are surprisingly close to ground truth because the matching itself ensures comparable groups. However, the KM independence assumption is violated in 1:k matched data, so the Stratified Cox model is the correct approach for estimating the treatment effect (HR). Both are shown to demonstrate this distinction.
 
 ## Project Structure
 
@@ -141,9 +142,9 @@ python experiment.py
 ```
 
 This will:
-1. Generate 10,000 synthetic patients
+1. Generate 10,000 synthetic patients (deterministic, seed=42)
 2. Run all 4 matching configurations with dynamic transitions
-3. Print Stratified Cox PH results for each
+3. Print HR comparison table for each (Stratified vs Unstratified vs DGP ground truth)
 4. Save all visualizations to `visualizations/`
 5. Log skipped participants to `logs/`
 
@@ -157,25 +158,31 @@ Generates data and displays a grid of exploratory plots (distributions, propensi
 
 ## Key Results (Typical Output)
 
-With default settings (N=10000, caliper=0.2):
-- **Hazard Ratio**: ~0.09-0.10 across all methods (treatment reduces cancer hazard by ~90%)
-- **Fixed-K=2**: ~1750 matched sets, ~700 control-to-treated transitions
-- **Varying-Ratio max=4**: ~1440 matched sets, ~1060 transitions, ~500 skipped
-- All methods produce consistent HR estimates, validating robustness
+With default settings (N=10000, caliper=0.2, seed=42):
+- **DGP ground truth**: HR = exp(-2.5) ≈ 0.0821
+- **Stratified Cox HR**: ~0.08-0.10 across all methods (closest to DGP, |diff| ≈ 0.001-0.02)
+- **Unstratified Cox HR**: ~0.16-0.20 across all methods (farther from DGP, |diff| ≈ 0.08)
+- **Fixed-K=2**: ~1788 matched sets, ~706 control-to-treated transitions
+- **Varying-Ratio max=4**: ~1446 matched sets, ~1069 transitions, ~513 skipped
+- Stratified Cox consistently recovers the DGP treatment effect better than unstratified, validating that stratification is essential for 1:k matched data
 
 ## Key Design Decisions
 
 1. **Propensity score = P(treatment | covariates)**, the standard definition. This estimates each patient's likelihood of receiving treatment given their covariates, ensuring that treated and control participants are matched on similar treatment probability profiles to reduce confounding.
 
-2. **Covariate-dependent surgery probability**: Surgery likelihood is modulated by patient covariates via a logistic function: p = σ(base + β_f·F + β_x·X). This creates meaningful separation in propensity scores between treated and controls, making the matching step necessary and demonstrable.
+2. **Covariate-dependent surgery probability**: Surgery likelihood is modulated by patient covariates via a logistic function: p = σ(base + β_f·F + β_x·X), with base=-5.5, β_f=2.5, β_x=1.5. This creates meaningful separation in propensity scores between treated and controls, making the matching step necessary and demonstrable. The parameters were tuned to produce a ~30% surgery rate.
 
-3. **Stratified Cox PH over Kaplan-Meier**: KM assumes independence, which doesn't hold with 1:k matching. The stratified Cox model treats each matched set as a stratum with its own baseline hazard.
+3. **Stratified Cox PH for hazard ratios**: The stratified Cox model treats each matched set as a stratum with its own baseline hazard. This is necessary because controls within a matched set are dependent (selected by propensity similarity) — standard Cox and KM assume independence. The stratified HR best recovers the DGP ground truth.
 
-4. **Dynamic transitions with censoring**: When a matched control gets surgery, they are censored in their old matched set (outcome unknown from that point) and enter a new matched set as treated with fresh controls.
+4. **KM for survival curves, Cox for hazard ratios**: KM and Cox serve complementary purposes. KM estimates survival curves (descriptive), while Cox estimates hazard ratios (inferential). In practice, KM curves are surprisingly accurate because matching ensures comparable groups, but the independence assumption is violated. The combined survival plot shows all four curve types (KM, Cox Stratified, Cox Unstratified, True Empirical) to demonstrate this distinction.
 
-5. **Optimal matching for fixed-k, greedy for varying-ratio**: Hungarian algorithm guarantees global optimum for fixed-k. Two-phase greedy guarantees at least 1 control per treated before distributing extras.
+5. **Dynamic transitions with censoring**: When a matched control gets surgery, they are censored in their old matched set (outcome unknown from that point) and enter a new matched set as treated with fresh controls. Note: dynamic transitions create *informative censoring* — higher-risk patients are more likely to get surgery and transition. Random censoring (end-of-study) and death are non-informative.
 
-6. **Comparing KM vs Cox-adjusted survival curves**: Kept both to demonstrate why the stratification choice matters — the curves differ significantly, validating that raw KM is misleading for 1:k matched data.
+6. **Optimal matching for fixed-k, greedy for varying-ratio**: Hungarian algorithm guarantees global optimum for fixed-k. Two-phase greedy guarantees at least 1 control per treated before distributing extras.
+
+7. **True Empirical survival curve**: Uses direct fraction computation from actual `cancer_age` values (S(t) = mean(times > t)) — no model or estimator. Transitioning controls are censored at their `surgery_age` because their post-surgery cancer outcomes are contaminated by the treatment effect.
+
+8. **Reproducibility**: A global `np.random.seed(42)` seeds the legacy NumPy random state used by all sampling functions, ensuring identical synthetic data across runs.
 
 ## References
 

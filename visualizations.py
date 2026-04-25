@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from lifelines import KaplanMeierFitter
+from lifelines import KaplanMeierFitter, CoxPHFitter
 from matching import calculate_propensity_distance
 from config import IS_LOGIT
 
@@ -49,10 +49,10 @@ def plot_all(analyzers, all_participants):
     plot_propensity_balance(analyzers, all_participants)
     plot_avg_distance_lollipop(analyzers, all_participants)
     plot_distance_distribution(analyzers)
-    plot_kaplan_meier(analyzers)
-    plot_cox_adjusted_survival(analyzers)
+    plot_survival_combined(analyzers)
     plot_transitions_over_time(analyzers)
     plot_controls_per_treated(analyzers)
+    plot_variance_comparison(analyzers)
 
 
 # =====================================================================
@@ -170,37 +170,41 @@ def plot_propensity_balance(analyzers, all_participants):
 def plot_avg_distance_lollipop(analyzers, all_participants):
     """
     Lollipop plot showing average propensity score distance between treated-control
-    pairs before matching (random pairing baseline) vs. after matching (actual pairs),
-    for each method. Demonstrates that matching reduces propensity distance.
+    pairs before matching (random pairing baseline) vs after matching (actual pairs),
+    for each method. The "before" baseline is computed per method using that method's
+    actual matched treated participants paired with random controls.
     """
-    # Before matching: estimate average distance by randomly pairing treated with controls
-    treated_all = [p for p in all_participants if p.is_treatment]
     control_all = [p for p in all_participants if not p.is_treatment]
-    n_sample = min(len(treated_all), len(control_all), 5000)
     rng = np.random.default_rng(42)
-    sampled_treated = rng.choice(treated_all, size=n_sample, replace=False)
-    sampled_control = rng.choice(control_all, size=n_sample, replace=False)
-    before_distances = [
-        calculate_propensity_distance(t.propensity_score, c.propensity_score, IS_LOGIT)
-        for t, c in zip(sampled_treated, sampled_control)
-    ]
-    before_avg = np.mean(before_distances)
 
-    # After matching: average distance across actual matched pairs per method
     method_names = []
+    before_avgs = []
     after_avgs = []
+
     for analyzer in analyzers:
-        distances = []
+        # Collect matched treated participants and after-matching distances
+        matched_treated = []
+        after_distances = []
         for match in analyzer.matches:
             treated = match["treated"]
+            matched_treated.append(treated)
             for control in match["control"]:
-                distances.append(
+                after_distances.append(
                     calculate_propensity_distance(
                         treated.propensity_score, control.propensity_score, IS_LOGIT
                     )
                 )
+
+        # Before matching: pair each matched treated with a random control
+        random_controls = rng.choice(control_all, size=len(matched_treated), replace=True)
+        before_distances = [
+            calculate_propensity_distance(t.propensity_score, c.propensity_score, IS_LOGIT)
+            for t, c in zip(matched_treated, random_controls)
+        ]
+
         method_names.append(analyzer.method_name)
-        after_avgs.append(np.mean(distances))
+        before_avgs.append(np.mean(before_distances))
+        after_avgs.append(np.mean(after_distances))
 
     # Build lollipop plot
     fig, ax = plt.subplots(figsize=(max(8, len(method_names) * 2.5), 5))
@@ -211,11 +215,11 @@ def plot_avg_distance_lollipop(analyzers, all_participants):
 
     # Lollipop stems (vertical lines from after to before)
     for i in range(len(method_names)):
-        ax.plot([x[i], x[i]], [after_avgs[i], before_avg], color="#CCCCCC",
+        ax.plot([x[i], x[i]], [after_avgs[i], before_avgs[i]], color="#CCCCCC",
                 linewidth=2, zorder=1)
 
-    # Before matching dots (same baseline for all methods)
-    ax.scatter(x, [before_avg] * len(x), color=BEFORE_COLOR, s=100, zorder=2,
+    # Before matching dots
+    ax.scatter(x, before_avgs, color=BEFORE_COLOR, s=100, zorder=2,
                label="Before Matching (random pairing)", edgecolors="white", linewidths=1.5)
 
     # After matching dots
@@ -226,8 +230,8 @@ def plot_avg_distance_lollipop(analyzers, all_participants):
     for i in range(len(method_names)):
         ax.text(x[i] + 0.15, after_avgs[i], f"{after_avgs[i]:.3f}", fontsize=9,
                 va="center", color=AFTER_COLOR)
-    ax.text(x[-1] + 0.15, before_avg, f"{before_avg:.3f}", fontsize=9,
-            va="center", color=BEFORE_COLOR)
+        ax.text(x[i] + 0.15, before_avgs[i], f"{before_avgs[i]:.3f}", fontsize=9,
+                va="center", color=BEFORE_COLOR)
 
     ax.set_xticks(x)
     ax.set_xticklabels(method_names, rotation=20, ha="right", fontsize=9)
@@ -302,123 +306,105 @@ def _sync_axes(axes):
 
 
 # =====================================================================
-# 4. Kaplan-Meier Survival Curves (Figure 5 style)
+# 4. Combined Survival Curves (KM + Cox Stratified + Cox Unstratified)
 # =====================================================================
-def plot_kaplan_meier(analyzers):
+def plot_survival_combined(analyzers):
     """
-    Kaplan-Meier survival curves with risk tables for treated vs. controls.
-    One subplot per method, with both arms overlaid.
+    Combined survival plot: one subplot per method, each containing four
+    curve types overlaid. Differentiated by line style:
+      - Solid:     Kaplan-Meier (empirical, subject to censoring)
+      - Dashed:    Cox-Adjusted Stratified (avg baseline across strata)
+      - Dotted:    Cox-Adjusted Unstratified (single pooled baseline)
+      - Dash-dot:  True Empirical (ground truth using actual cancer_age)
+    Blue = Treatment, Red = Control.
     """
     n = len(analyzers)
-    fig, axes = _create_grid(n, cell_width=7, cell_height=6)
+    fig, axes = _create_grid(n, cell_width=8, cell_height=6)
 
     for ax, analyzer in zip(axes, analyzers):
         df = analyzer.df
 
+        # --- 1. Kaplan-Meier (solid) ---
         treated_df = df[df["treatment"] == 1]
         control_df = df[df["treatment"] == 0]
 
         kmf_treated = KaplanMeierFitter()
-        kmf_treated.fit(treated_df["duration"], treated_df["event_observed"], label="Treatment")
-        kmf_treated.plot_survival_function(ax=ax, color=TREATMENT_COLOR, ci_show=True)
+        kmf_treated.fit(treated_df["duration"], treated_df["event_observed"])
+        ax.plot(kmf_treated.survival_function_.index,
+                kmf_treated.survival_function_.values,
+                color=TREATMENT_COLOR, linewidth=2, linestyle="-", label="Treatment (KM)")
 
         kmf_control = KaplanMeierFitter()
-        kmf_control.fit(control_df["duration"], control_df["event_observed"], label="Control")
-        kmf_control.plot_survival_function(ax=ax, color=CONTROL_COLOR, ci_show=True)
+        kmf_control.fit(control_df["duration"], control_df["event_observed"])
+        ax.plot(kmf_control.survival_function_.index,
+                kmf_control.survival_function_.values,
+                color=CONTROL_COLOR, linewidth=2, linestyle="-", label="Control (KM)")
 
-        ax.set_title(f"Survival Curve\n{analyzer.method_name}", fontsize=12)
-        ax.set_xlabel("Years Since Matching")
-        ax.set_ylabel("Survival Probability (Cancer-Free)")
-        ax.legend(loc="lower left")
-
-        # Risk table below the plot
-        _add_risk_table(ax, kmf_treated, kmf_control)
-
-    # Shared axes: same x and y range across all KM plots
-    max_x = max(ax.get_xlim()[1] for ax in axes)
-    min_y = min(ax.get_ylim()[0] for ax in axes)
-    for ax in axes:
-        ax.set_xlim(0, max_x)
-        ax.set_ylim(min_y, 1.05)
-
-    fig.suptitle("Kaplan-Meier Survival Curves", fontsize=14, fontweight="bold")
-    plt.tight_layout(rect=[0, 0.08, 1, 0.95])
-    plt.savefig(os.path.join(OUTPUT_DIR, "kaplan_meier.png"), dpi=150, bbox_inches="tight")
-    plt.close()
-
-
-def _add_risk_table(ax, kmf_treated, kmf_control):
-    """Adds a risk table annotation below the KM plot."""
-    # Pick time points for the risk table
-    max_time = max(kmf_treated.timeline.max(), kmf_control.timeline.max())
-    time_points = np.linspace(0, max_time, min(6, int(max_time) + 1)).astype(int)
-    time_points = sorted(set(time_points))
-
-    treated_at_risk = []
-    control_at_risk = []
-    for t in time_points:
-        treated_at_risk.append(_at_risk_count(kmf_treated, t))
-        control_at_risk.append(_at_risk_count(kmf_control, t))
-
-    table_text = "At risk\n"
-    table_text += "Treated:  " + "  ".join(f"{r:>5}" for r in treated_at_risk) + "\n"
-    table_text += "Control:  " + "  ".join(f"{r:>5}" for r in control_at_risk)
-
-    ax.text(0.02, -0.22, table_text, transform=ax.transAxes, fontsize=8,
-            verticalalignment="top", fontfamily="monospace",
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="gray", alpha=0.8))
-
-
-def _at_risk_count(kmf, t):
-    """Returns the number of subjects at risk at time t."""
-    event_table = kmf.event_table
-    valid = event_table.index[event_table.index <= t]
-    if len(valid) == 0:
-        return event_table["at_risk"].iloc[0] if len(event_table) > 0 else 0
-    return int(event_table.loc[valid[-1], "at_risk"])
-
-# =====================================================================
-# 5. Cox-Adjusted Survival Curves
-# =====================================================================
-def plot_cox_adjusted_survival(analyzers):
-    """
-    Adjusted survival curves derived from the Stratified Cox PH model.
-    Unlike raw KM curves, these account for the matched-set stratification.
-    Uses the average baseline cumulative hazard across all strata, then applies
-    the Cox treatment coefficient to produce adjusted curves for treated vs. control.
-    S(t|treatment) = S0(t) ^ exp(beta * treatment)
-    """
-    n = len(analyzers)
-    fig, axes = _create_grid(n, cell_width=7, cell_height=6)
-
-    for ax, analyzer in zip(axes, analyzers):
+        # --- 2. Cox Stratified (dashed) ---
         if analyzer.cox_model is None:
             analyzer.run_stratified_cox()
 
-        # Get the baseline cumulative hazard per stratum, then average across strata
         baseline_ch = analyzer.cox_model.baseline_cumulative_hazard_
-        # Average across all strata columns to get a single baseline
         avg_baseline_ch = baseline_ch.mean(axis=1).sort_index()
+        baseline_surv_strat = np.exp(-avg_baseline_ch)
+        beta_strat = analyzer.cox_model.params_["treatment"]
 
-        # S0(t) = exp(-H0(t))
-        baseline_survival = np.exp(-avg_baseline_ch)
+        ax.plot(baseline_surv_strat.index,
+                (baseline_surv_strat ** np.exp(beta_strat)).values,
+                color=TREATMENT_COLOR, linewidth=2, linestyle="--", label="Treatment (Cox Stratified)")
+        ax.plot(baseline_surv_strat.index,
+                baseline_surv_strat.values,
+                color=CONTROL_COLOR, linewidth=2, linestyle="--", label="Control (Cox Stratified)")
 
-        # Treatment coefficient
-        beta = analyzer.cox_model.params_["treatment"]
+        # --- 3. Cox Unstratified (dotted) ---
+        cox_unstrat = CoxPHFitter()
+        df_no_strata = df[["duration", "event_observed", "treatment"]].copy()
+        cox_unstrat.fit(df_no_strata, duration_col="duration", event_col="event_observed")
 
-        # S(t|treated) = S0(t)^exp(beta*1), S(t|control) = S0(t)^exp(beta*0) = S0(t)
-        surv_control = baseline_survival
-        surv_treated = baseline_survival ** np.exp(beta)
+        baseline_ch_unstrat = cox_unstrat.baseline_cumulative_hazard_.iloc[:, 0].sort_index()
+        baseline_surv_unstrat = np.exp(-baseline_ch_unstrat)
+        beta_unstrat = cox_unstrat.params_["treatment"]
 
-        ax.plot(surv_treated.index, surv_treated.values, color=TREATMENT_COLOR,
-                linewidth=2, label="Treatment (adjusted)")
-        ax.plot(surv_control.index, surv_control.values, color=CONTROL_COLOR,
-                linewidth=2, label="Control (adjusted)")
+        ax.plot(baseline_surv_unstrat.index,
+                (baseline_surv_unstrat ** np.exp(beta_unstrat)).values,
+                color=TREATMENT_COLOR, linewidth=2, linestyle=":", label="Treatment (Cox Unstratified)")
+        ax.plot(baseline_surv_unstrat.index,
+                baseline_surv_unstrat.values,
+                color=CONTROL_COLOR, linewidth=2, linestyle=":", label="Control (Cox Unstratified)")
 
-        ax.set_title(f"Cox-Adjusted Survival\n{analyzer.method_name}", fontsize=12)
+        # --- 4. True Empirical Survival (dash-dot) ---
+        # Direct computation from actual cancer_age — no model, no estimator.
+        # Transitioning controls are censored at surgery_age (their post-surgery
+        # cancer_age is contaminated by the treatment effect).
+        true_treated_times = []
+        true_control_times = []
+
+        for match in analyzer.matches:
+            match_time = match.get("match_time", 0)
+            true_treated_times.append(match["treated"].cancer_age - match_time)
+            for control in match["control"]:
+                censor_age = analyzer.transitioned_controls.get(control.id, None)
+                if censor_age is not None:
+                    true_control_times.append(censor_age - match_time)
+                else:
+                    true_control_times.append(control.cancer_age - match_time)
+
+        true_treated_times = np.array(true_treated_times)
+        true_control_times = np.array(true_control_times)
+
+        for times, color, label in [
+            (true_treated_times, TREATMENT_COLOR, "Treatment (True)"),
+            (true_control_times, CONTROL_COLOR, "Control (True)"),
+        ]:
+            sorted_t = np.sort(np.unique(times))
+            survival = np.array([np.mean(times > t) for t in sorted_t])
+            ax.plot(sorted_t, survival, color=color, linewidth=1.5,
+                    linestyle="-.", alpha=0.7, label=label)
+
+        ax.set_title(f"{analyzer.method_name}", fontsize=12)
         ax.set_xlabel("Years Since Matching")
         ax.set_ylabel("Survival Probability (Cancer-Free)")
-        ax.legend(loc="lower left")
+        ax.legend(loc="lower left", fontsize=7)
 
     # Shared axes
     max_x = max(ax.get_xlim()[1] for ax in axes)
@@ -427,14 +413,15 @@ def plot_cox_adjusted_survival(analyzers):
         ax.set_xlim(0, max_x)
         ax.set_ylim(min_y, 1.05)
 
-    fig.suptitle("Cox-Adjusted Survival Curves (Stratified)", fontsize=14, fontweight="bold")
+    fig.suptitle("Survival Curves: KM vs Cox Stratified vs Cox Unstratified",
+                 fontsize=14, fontweight="bold")
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, "cox_adjusted_survival.png"), dpi=150, bbox_inches="tight")
+    plt.savefig(os.path.join(OUTPUT_DIR, "survival_combined.png"), dpi=150, bbox_inches="tight")
     plt.close()
 
 
 # =====================================================================
-# 6. Transitions Over Time
+# 5. Transitions Over Time
 # =====================================================================
 def plot_transitions_over_time(analyzers):
     """
@@ -508,4 +495,90 @@ def plot_controls_per_treated(analyzers):
     fig.suptitle("Controls Per Treated Participant", fontsize=14, fontweight="bold")
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, "controls_per_treated.png"), dpi=150, bbox_inches="tight")
+    plt.close()
+
+
+# =====================================================================
+# 8. Variance Comparison Across Methods
+# =====================================================================
+def plot_variance_comparison(analyzers):
+    """
+    Visualization comparing variance metrics (SE and CI width) across matching methods.
+    Creates a multi-panel plot showing:
+    1. Standard Error of coefficient (lower is better)
+    2. CI width of hazard ratio (lower is better)
+    3. Forest plot of hazard ratios with confidence intervals
+    """
+    # Extract variance metrics
+    variance_metrics = [analyzer.get_variance_metrics() for analyzer in analyzers]
+    df = pd.DataFrame(variance_metrics)
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+    # Panel 1: Standard Error comparison (bar chart)
+    ax = axes[0]
+    x = np.arange(len(df))
+    bars = ax.bar(x, df["coef_se"], color=METHOD_COLORS[:len(df)],
+                  edgecolor="white", alpha=0.8)
+
+    # Add value labels on bars
+    for i, (bar, val) in enumerate(zip(bars, df["coef_se"])):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.001,
+                f"{val:.4f}", ha="center", va="bottom", fontsize=9)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(df["method"], rotation=20, ha="right", fontsize=9)
+    ax.set_ylabel("Standard Error of Coefficient")
+    ax.set_title("Coefficient Standard Error\n(Lower = More Precise)", fontweight="bold")
+    ax.set_ylim(0, df["coef_se"].max() * 1.15)
+
+    # Panel 2: CI Width comparison (bar chart)
+    ax = axes[1]
+    bars = ax.bar(x, df["ci_width"], color=METHOD_COLORS[:len(df)],
+                  edgecolor="white", alpha=0.8)
+
+    # Add value labels on bars
+    for i, (bar, val) in enumerate(zip(bars, df["ci_width"])):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
+                f"{val:.4f}", ha="center", va="bottom", fontsize=9)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(df["method"], rotation=20, ha="right", fontsize=9)
+    ax.set_ylabel("95% CI Width (HR)")
+    ax.set_title("Confidence Interval Width\n(Lower = More Precise)", fontweight="bold")
+    ax.set_ylim(0, df["ci_width"].max() * 1.15)
+
+    # Panel 3: Forest plot (Hazard Ratios with CIs)
+    ax = axes[2]
+    y_pos = np.arange(len(df))
+
+    # Plot horizontal lines for CIs
+    for i, row in df.iterrows():
+        ax.plot([row["hr_lower_95"], row["hr_upper_95"]], [i, i],
+                color=METHOD_COLORS[i], linewidth=2, marker='|', markersize=10)
+        # Plot point estimate
+        ax.plot(row["hazard_ratio"], i, 'o', color=METHOD_COLORS[i],
+                markersize=10, markeredgecolor="white", markeredgewidth=1.5)
+
+    # Add a vertical line at HR=1 (no effect)
+    ax.axvline(1, color='gray', linestyle='--', linewidth=1, alpha=0.7)
+    ax.text(1, len(df) - 0.5, 'No Effect', ha='center', va='bottom',
+            fontsize=9, color='gray', rotation=90)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(df["method"], fontsize=9)
+    ax.set_xlabel("Hazard Ratio")
+    ax.set_title("Hazard Ratios with 95% CI\n(Forest Plot)", fontweight="bold")
+    ax.grid(axis='x', alpha=0.3, linestyle=':')
+
+    # Add HR values as text
+    for i, row in df.iterrows():
+        ax.text(row["hr_upper_95"] + 0.05, i,
+                f"HR={row['hazard_ratio']:.3f} [{row['hr_lower_95']:.3f}-{row['hr_upper_95']:.3f}]",
+                va='center', fontsize=8, color=METHOD_COLORS[i])
+
+    fig.suptitle("Variance Comparison Across Matching Methods",
+                 fontsize=16, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, "variance_comparison.png"), dpi=150, bbox_inches="tight")
     plt.close()

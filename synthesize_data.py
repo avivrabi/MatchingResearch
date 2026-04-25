@@ -7,7 +7,7 @@ from sklearn.linear_model import LogisticRegression
 
 # Set seed for reproducibility
 GLOBAL_SEED = 42
-rng = np.random.default_rng(GLOBAL_SEED)
+np.random.seed(GLOBAL_SEED)
 
 # Israel-specific mortality constants (Gompertz-Makeham)
 ISR_ALPHA = 0.0001  # Baseline biological vulnerability
