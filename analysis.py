@@ -126,6 +126,8 @@ class Analyzer:
         print(f"  {'DGP (truth)':<18}{dgp_hr:>10.4f}{'':>24}{'':>10}{'':>14}{'':>10}")
         print(f"  {'Stratified':<18}{strat_hr:>10.4f}{strat_ci:>24}{strat_se:>10.4f}{strat_p:>14.2e}{abs(strat_hr - dgp_hr):>10.4f}")
         print(f"  {'Unstratified':<18}{unstrat_hr:>10.4f}{unstrat_ci:>24}{unstrat_se:>10.4f}{unstrat_p:>14.2e}{abs(unstrat_hr - dgp_hr):>10.4f}")
+        print(f"{'-' * w}")
+        print(f"  => Treatment reduces cancer hazard by {(1 - strat_hr) * 100:.1f}% (Stratified Cox)")
         print(f"{'=' * w}\n")
 
     def get_variance_metrics(self) -> dict:
