@@ -121,7 +121,7 @@ class Analyzer:
         print(f"  Matched sets: {n_strata}   Treated: {n_treated}   Controls: {n_controls}")
         print(f"  Events: {n_events}   Transitions: {n_transitions}")
         print(f"{'-' * w}")
-        print(f"  {'Model':<18}{'HR':>10}{'95% CI':>24}{'SE':>10}{'p-value':>14}{'|Diff|':>10}")
+        print(f"  {'Model':<18}{'HR':>10}{'95% CI':>24}{'SE(log)':>10}{'p-value':>14}{'|Diff|':>10}")
         print(f"  {'-' * (w - 4)}")
         print(f"  {'DGP (truth)':<18}{dgp_hr:>10.4f}{'':>24}{'':>10}{'':>14}{'':>10}")
         print(f"  {'Stratified':<18}{strat_hr:>10.4f}{strat_ci:>24}{strat_se:>10.4f}{strat_p:>14.2e}{abs(strat_hr - dgp_hr):>10.4f}")
