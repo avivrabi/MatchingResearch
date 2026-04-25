@@ -50,6 +50,7 @@ def plot_all(analyzers, all_participants):
     plot_avg_distance_lollipop(analyzers, all_participants)
     plot_distance_distribution(analyzers)
     plot_survival_combined(analyzers)
+    plot_survival_km_vs_true(analyzers)
     plot_transitions_over_time(analyzers)
     plot_controls_per_treated(analyzers)
     plot_variance_comparison(analyzers)
@@ -421,7 +422,86 @@ def plot_survival_combined(analyzers):
 
 
 # =====================================================================
-# 5. Transitions Over Time
+# 5. KM vs True Empirical Survival Curves
+# =====================================================================
+def plot_survival_km_vs_true(analyzers):
+    """
+    Simplified survival plot: one subplot per method, each containing only
+    KM and True Empirical curves. Shows how well KM (descriptive) recovers
+    the ground-truth survival without any model.
+      - Solid:     Kaplan-Meier (empirical, subject to censoring)
+      - Dash-dot:  True Empirical (ground truth using actual cancer_age)
+    Blue = Treatment, Red = Control.
+    """
+    n = len(analyzers)
+    fig, axes = _create_grid(n, cell_width=8, cell_height=6)
+
+    for ax, analyzer in zip(axes, analyzers):
+        df = analyzer.df
+
+        # --- KM (solid) ---
+        treated_df = df[df["treatment"] == 1]
+        control_df = df[df["treatment"] == 0]
+
+        kmf_treated = KaplanMeierFitter()
+        kmf_treated.fit(treated_df["duration"], treated_df["event_observed"])
+        ax.plot(kmf_treated.survival_function_.index,
+                kmf_treated.survival_function_.values,
+                color=TREATMENT_COLOR, linewidth=2, linestyle="-", label="Treatment (KM)")
+
+        kmf_control = KaplanMeierFitter()
+        kmf_control.fit(control_df["duration"], control_df["event_observed"])
+        ax.plot(kmf_control.survival_function_.index,
+                kmf_control.survival_function_.values,
+                color=CONTROL_COLOR, linewidth=2, linestyle="-", label="Control (KM)")
+
+        # --- True Empirical (dash-dot) ---
+        true_treated_times = []
+        true_control_times = []
+
+        for match in analyzer.matches:
+            match_time = match.get("match_time", 0)
+            true_treated_times.append(match["treated"].cancer_age - match_time)
+            for control in match["control"]:
+                censor_age = analyzer.transitioned_controls.get(control.id, None)
+                if censor_age is not None:
+                    true_control_times.append(censor_age - match_time)
+                else:
+                    true_control_times.append(control.cancer_age - match_time)
+
+        true_treated_times = np.array(true_treated_times)
+        true_control_times = np.array(true_control_times)
+
+        for times, color, label in [
+            (true_treated_times, TREATMENT_COLOR, "Treatment (True)"),
+            (true_control_times, CONTROL_COLOR, "Control (True)"),
+        ]:
+            sorted_t = np.sort(np.unique(times))
+            survival = np.array([np.mean(times > t) for t in sorted_t])
+            ax.plot(sorted_t, survival, color=color, linewidth=1.5,
+                    linestyle="-.", alpha=0.7, label=label)
+
+        ax.set_title(f"{analyzer.method_name}", fontsize=12)
+        ax.set_xlabel("Years Since Matching")
+        ax.set_ylabel("Survival Probability (Cancer-Free)")
+        ax.legend(loc="lower left", fontsize=9)
+
+    # Shared axes
+    max_x = max(ax.get_xlim()[1] for ax in axes)
+    min_y = min(ax.get_ylim()[0] for ax in axes)
+    for ax in axes:
+        ax.set_xlim(0, max_x)
+        ax.set_ylim(min_y, 1.05)
+
+    fig.suptitle("Survival Curves: KM vs True Empirical",
+                 fontsize=14, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, "survival_km_vs_true.png"), dpi=150, bbox_inches="tight")
+    plt.close()
+
+
+# =====================================================================
+# 6. Transitions Over Time
 # =====================================================================
 def plot_transitions_over_time(analyzers):
     """

@@ -93,6 +93,7 @@ The `Analyzer` class fits a **Stratified Cox Proportional Hazards Model** (via `
 | **Avg Distance Lollipop** | Lollipop plot of average propensity distance before (random pairing) vs after matching, computed per method using each method's actual matched treated participants |
 | **Distance Distribution** | Boxplots of propensity distances between matched pairs, bucketed by propensity score interval |
 | **Combined Survival** | Grid of subplots (one per method), each overlaying 4 curve types differentiated by line style: **KM** (solid) — empirical Kaplan-Meier; **Cox Stratified** (dashed) — model-based with per-stratum baseline hazard; **Cox Unstratified** (dotted) — single pooled baseline; **True Empirical** (dash-dot) — direct fraction computation from actual cancer_age values with no model. Transitioning controls are censored at surgery_age in the True curve to avoid treatment-effect contamination. |
+| **KM vs True Survival** | Simplified survival grid showing only KM and True Empirical curves side by side. Demonstrates that KM (descriptive) closely recovers the ground-truth survival, validating its use for visualizing survival curves even in matched cohorts. |
 | **Transitions Over Time** | Bar chart of control-to-treated transitions per age |
 | **Controls Per Treated** | Histogram of how many controls each treated participant received |
 | **Variance Comparison** | Three-panel plot: coefficient SE bar chart, CI width bar chart, and forest plot of hazard ratios with 95% CIs across all methods |
