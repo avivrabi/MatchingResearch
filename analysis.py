@@ -89,7 +89,7 @@ class Analyzer:
         strat_s = self.cox_model.summary
         strat_hr = strat_s.loc["treatment", "exp(coef)"]
         strat_ci = f"[{strat_s.loc['treatment', 'exp(coef) lower 95%']:.4f}, {strat_s.loc['treatment', 'exp(coef) upper 95%']:.4f}]"
-        strat_se = strat_s.loc["treatment", "se(coef)"]
+        strat_se_hr = strat_hr * strat_s.loc["treatment", "se(coef)"]  # Delta method: SE(HR) = HR * SE(beta)
         strat_p = strat_s.loc["treatment", "p"]
 
         # Unstratified Cox (pooled, no strata — equivalent to KM-based inference)
@@ -101,7 +101,7 @@ class Analyzer:
         unstrat_s = unstrat_model.summary
         unstrat_hr = unstrat_s.loc["treatment", "exp(coef)"]
         unstrat_ci = f"[{unstrat_s.loc['treatment', 'exp(coef) lower 95%']:.4f}, {unstrat_s.loc['treatment', 'exp(coef) upper 95%']:.4f}]"
-        unstrat_se = unstrat_s.loc["treatment", "se(coef)"]
+        unstrat_se_hr = unstrat_hr * unstrat_s.loc["treatment", "se(coef)"]  # Delta method
         unstrat_p = unstrat_s.loc["treatment", "p"]
 
         # DGP ground truth: beta_s_age=-2.5 in sample_time_of_cancer
@@ -121,11 +121,11 @@ class Analyzer:
         print(f"  Matched sets: {n_strata}   Treated: {n_treated}   Controls: {n_controls}")
         print(f"  Events: {n_events}   Transitions: {n_transitions}")
         print(f"{'-' * w}")
-        print(f"  {'Model':<18}{'HR':>10}{'95% CI':>24}{'SE(log)':>10}{'p-value':>14}{'|Diff|':>10}")
+        print(f"  {'Model':<18}{'HR':>10}{'95% CI':>24}{'SE(HR)':>10}{'p-value':>14}{'|Diff|':>10}")
         print(f"  {'-' * (w - 4)}")
         print(f"  {'DGP (truth)':<18}{dgp_hr:>10.4f}{'':>24}{'':>10}{'':>14}{'':>10}")
-        print(f"  {'Stratified':<18}{strat_hr:>10.4f}{strat_ci:>24}{strat_se:>10.4f}{strat_p:>14.2e}{abs(strat_hr - dgp_hr):>10.4f}")
-        print(f"  {'Unstratified':<18}{unstrat_hr:>10.4f}{unstrat_ci:>24}{unstrat_se:>10.4f}{unstrat_p:>14.2e}{abs(unstrat_hr - dgp_hr):>10.4f}")
+        print(f"  {'Stratified':<18}{strat_hr:>10.4f}{strat_ci:>24}{strat_se_hr:>10.4f}{strat_p:>14.2e}{abs(strat_hr - dgp_hr):>10.4f}")
+        print(f"  {'Unstratified':<18}{unstrat_hr:>10.4f}{unstrat_ci:>24}{unstrat_se_hr:>10.4f}{unstrat_p:>14.2e}{abs(unstrat_hr - dgp_hr):>10.4f}")
         print(f"{'-' * w}")
         print(f"  => Treatment reduces cancer hazard by {(1 - strat_hr) * 100:.1f}% (Stratified Cox)")
         print(f"{'=' * w}\n")
