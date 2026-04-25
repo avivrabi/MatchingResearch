@@ -227,19 +227,22 @@ def plot_avg_distance_lollipop(analyzers, all_participants):
     ax.scatter(x, after_avgs, color=AFTER_COLOR, s=100, zorder=2,
                label="After Matching", edgecolors="white", linewidths=1.5)
 
-    # Value annotations
+    # Value annotations — offset labels away from dots so they're readable
+    y_range = max(before_avgs) - 0
+    offset = y_range * 0.04  # small vertical nudge
+
     for i in range(len(method_names)):
-        ax.text(x[i] + 0.15, after_avgs[i], f"{after_avgs[i]:.3f}", fontsize=9,
-                va="center", color=AFTER_COLOR)
-        ax.text(x[i] + 0.15, before_avgs[i], f"{before_avgs[i]:.3f}", fontsize=9,
-                va="center", color=BEFORE_COLOR)
+        ax.text(x[i] + 0.15, after_avgs[i] + offset, f"{after_avgs[i]:.3f}", fontsize=9,
+                va="bottom", color=AFTER_COLOR, fontweight="bold")
+        ax.text(x[i] + 0.15, before_avgs[i] - offset, f"{before_avgs[i]:.3f}", fontsize=9,
+                va="top", color=BEFORE_COLOR)
 
     ax.set_xticks(x)
     ax.set_xticklabels(method_names, rotation=20, ha="right", fontsize=9)
     ax.set_ylabel("Avg Propensity Score Distance (logit scale)" if IS_LOGIT else "Avg Propensity Score Distance")
     ax.set_title("Average Propensity Distance: Before vs After Matching", fontsize=14, fontweight="bold")
     ax.legend(loc="upper right")
-    ax.set_ylim(0, None)
+    ax.set_ylim(-offset, max(before_avgs) * 1.1)
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, "avg_distance_lollipop.png"), dpi=150, bbox_inches="tight")
