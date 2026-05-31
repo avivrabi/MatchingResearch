@@ -143,7 +143,7 @@ python experiment.py
 ```
 
 This will:
-1. Generate 10,000 synthetic patients (deterministic, seed=42)
+1. Generate 100,000 synthetic patients (deterministic, seed=42)
 2. Run all 4 matching configurations with dynamic transitions
 3. Print HR comparison table for each (Stratified vs Unstratified vs DGP ground truth)
 4. Save all visualizations to `visualizations/`
