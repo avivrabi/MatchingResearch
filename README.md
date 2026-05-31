@@ -184,10 +184,3 @@ With default settings (N=10000, caliper=0.2, seed=42):
 7. **True Empirical survival curve**: Uses direct fraction computation from actual `cancer_age` values (S(t) = mean(times > t)) — no model or estimator. Transitioning controls are censored at their `surgery_age` because their post-surgery cancer outcomes are contaminated by the treatment effect.
 
 8. **Reproducibility**: A global `np.random.seed(42)` seeds the legacy NumPy random state used by all sampling functions, ensuring identical synthetic data across runs.
-
-## References
-
-1. Dagan, N., et al. (2021). BNT162b2 mRNA Covid-19 Vaccine in a Nationwide Mass Vaccination Setting. *NEJM*, 384(15), 1412-1423.
-2. Stuart, E. A. (2010). Matching Methods for Causal Inference: A Review and a Look Forward. *Statistical Science*, 25(1), 1.
-3. Rosenbaum, P. R. *Design of Observational Studies*.
-4. Yoo, J., et al. Stratified Cox Proportional Hazards Model for matched data.
